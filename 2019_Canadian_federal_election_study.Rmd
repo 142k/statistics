@@ -1,0 +1,246 @@
+---
+title: "How could 2019 Canadian federal election be different if all voters participated"
+author: "Hyunseok Rha"
+date: "Dec 22, 2020"
+output: 
+  pdf_document:
+    citation_package: natbib
+url: https://github.com/142k/statistics
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_chunk$set(fig.pos = "!H", out.extra = "")
+library(cesR)
+library(tidyverse)
+library(labelled)
+library(nnet)
+library(kableExtra)
+```
+## Abstract
+
+Object: To predict the result of 2019 Canadian federal election with assumption of 100% voting participation rate and see how it would differ from the real result.
+
+Methodology: Build multinomial multilevel regression model with the 2019 Canadian Election Study  @DVN/DUS88V_2020 data and use poststratification with the 2016 Statistics Canada Census @2016Census data to predict the election result. 
+
+Result: With the assumption that 100% of elidgible voters had voted, the gap between the number of votes that Libertal party got and Conservative party got gets closer and the number of votes NDP would get decreased.  
+
+Conclusion: It is important for every citizens to vote since the vote result can be distorted with less participation rate.   
+
+**Keywords**: 2019 Canadian federal election, Canadian politics.
+
+## Introduction
+ 
+Election is one of the key components of democracy since it keeps a democratic country functions as it should by giving citizens the right to select their own government. Hence, every citizen who belongs to a democratic government has the right and duty to vote. 
+
+In 2019 Canadian federal election, 65.95% of the elidgeble voters out of 27.1 million have practiced the election. Liberal party got 6,018,728 votes(33.1%), Conservative party got 6,239,227 votes(34.3%) and New Democratic party got 2,903,722 votes(16.0%). 
+And one question comes to my mind that "What if every population had participated, how would the result differ?".
+
+To answer this question, I will use 2019 Canadian Election Study - Online Survey @DVN/DUS88V_2020 data and 2016 Statistic Canada Census data @2016Census with multinomial multilevel regression with poststratification model to estimate the result of a scenario where 100% of eligible voters had voted. Then I will talk about how my model's result data differs from the real result, which has less participation rate, and why it is important for the citizens to practice their right by showing a possible mis-representation of their government that could be caused by less participation rate of voting which could be not a true representation of the whole citizen.
+
+Finally, the code behind this paper can be found at https://github.com/142k/statistics
+
+## Data
+```{r download, warning=FALSE, message=FALSE, include=FALSE}
+rm(list = ls(all.names = TRUE))
+# Setting seed
+set.seed(304)
+
+# getting CES 2019 data 
+get_ces("ces2019_web")
+
+ces2019 <- dplyr::select(ces2019_web, c(6, 8:9, 22))
+ces2019 <- dplyr::rename(ces2019, yob = 1, gender = 2, province_territory = 3, which_party_to_vote_for = 4)
+
+ces2019$age <- (100 - as.numeric(ces2019$yob))
+ces2019 <- ces2019 %>% filter(age >= 20)
+ces2019$age_group <- case_when(
+    !is.na(ces2019$age) & ces2019$age >= 20 & ces2019$age <= 24  ~ "20 to 24 years",
+    !is.na(ces2019$age) & ces2019$age >= 25 & ces2019$age <= 29  ~ "25 to 29 years",
+    !is.na(ces2019$age) & ces2019$age >= 30 & ces2019$age <= 34  ~ "30 to 34 years",
+    !is.na(ces2019$age) & ces2019$age >= 35 & ces2019$age <= 39  ~ "35 to 39 years",
+    !is.na(ces2019$age) & ces2019$age >= 40 & ces2019$age <= 44  ~ "40 to 44 years",
+    !is.na(ces2019$age) & ces2019$age >= 45 & ces2019$age <= 49  ~ "45 to 49 years",
+    !is.na(ces2019$age) & ces2019$age >= 50 & ces2019$age <= 54  ~ "50 to 54 years",
+    !is.na(ces2019$age) & ces2019$age >= 55 & ces2019$age <= 59  ~ "55 to 59 years",
+    !is.na(ces2019$age) & ces2019$age >= 60 & ces2019$age <= 64  ~ "60 to 64 years",
+    !is.na(ces2019$age) & ces2019$age >= 65 & ces2019$age <= 69  ~ "65 to 69 years",
+    !is.na(ces2019$age) & ces2019$age >= 70 & ces2019$age <= 74  ~ "70 to 74 years",
+    !is.na(ces2019$age) & ces2019$age >= 75 & ces2019$age <= 79  ~ "75 to 79 years",
+    !is.na(ces2019$age) & ces2019$age >= 80 & ces2019$age <= 84  ~ "80 to 84 years",
+    !is.na(ces2019$age) & ces2019$age >= 85 & ces2019$age <= 89  ~ "85 to 89 years",
+    !is.na(ces2019$age) & ces2019$age >= 90 & ces2019$age <= 94  ~ "90 to 94 years",
+    !is.na(ces2019$age) & ces2019$age >= 95 & ces2019$age <= 99  ~ "95 to 99 years",
+    !is.na(ces2019$age) & ces2019$age >= 100 ~ "100 years and over"
+    )
+
+ces2019$age_group <- as.factor(ces2019$age_group)
+
+ces2019$sex <- case_when(
+    !is.na(ces2019$gender) & ces2019$gender == 2  ~ "female",
+    !is.na(ces2019$gender)  & ces2019$gender == 1  ~ "male"
+    )
+
+ces2019$sex <- as.factor(ces2019$sex)
+ces2019 <- as_factor(ces2019)
+
+ces2019$province_num <- as.numeric(ces2019$province_territory)
+
+# processing 2016 Census data
+census_2016 <- read_csv("2016_census.csv")
+
+census_2016 <- census_2016 %>% 
+  filter(GEO_NAME != "Canada") %>%
+  filter(`Member ID: Profile of Canada, Provinces and Territories (2247)` %in% c(15:23, 25:28, 30:32)) %>%
+  select(GEO_NAME, `DIM: Profile of Canada, Provinces and Territories (2247)`, `Dim: Sex (3): Member ID: [2]: Male`, `Dim: Sex (3): Member ID: [3]: Female`) %>%
+  rename(province=GEO_NAME) %>%
+  rename(age_group=`DIM: Profile of Canada, Provinces and Territories (2247)`) %>%
+  rename(male_count=`Dim: Sex (3): Member ID: [2]: Male`) %>%
+  rename(female_count=`Dim: Sex (3): Member ID: [3]: Female`)
+
+census_2016$province <- as.factor(census_2016$province)
+census_2016$age_group <- as_factor(census_2016$age_group)
+
+census_2016_processed <- setNames(data.frame(matrix(ncol = 5, nrow = 0)), c("province_territory", "province_num", "age_group", "sex", "count"))
+
+for(index in 1:nrow(census_2016)) {
+  row = census_2016[index,]
+  census_2016_processed[index * 2 - 1,] = c(as.character(row$province), as.numeric(row$province), as.character(row$age_group), "male", row$male_count)
+  census_2016_processed[index * 2,] = c(as.character(row$province), as.numeric(row$province), as.character(row$age_group), "female", row$female_count)
+}
+
+census_2016_processed$age_group <- as_factor(census_2016_processed$age_group)
+census_2016_processed$sex <- as_factor(census_2016_processed$sex)
+census_2016_processed$province_num <- as.numeric(census_2016_processed$province_num)
+census_2016_processed$count <- as.numeric(census_2016_processed$count)
+
+# real 2019 election data
+realResult <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("name of party", "number of votes"))
+realResult[1,] = c("Liberal Party", 6018728)
+realResult[2,] = c("Conservative Party", 6239227)
+realResult[3,] = c("ndp", 2903722)
+realResult$`number of votes` <- as.numeric(realResult$`number of votes`)
+realResult <- realResult %>%
+  mutate(`ratio(%)`=((`number of votes`/sum(`number of votes`))*100))
+```
+
+The data used for this analysis are 2019 Canadian Election Study @DVN/DUS88V_2020 and 2016 Census @2016Census data.
+
+The 2019 Canadian Election Study @DVN/DUS88V_2020 is sourced from the Harvard Dataverse that can be accessed by the link in the references.
+The sampling populaton and frame of the survey is the entire Canadian who is eligible to vote for the 2019 Canadain federal election. The sample of the survey is the individuals who had participated the online survey.
+The data has been processed so it only contains relevalent data. It has total of 37012 records of individuals' year of birth, sex, age group, which province they are living in and which party that the individual are likely to vote for the 2019 Canadian federal election as you can see in Table 1.
+I have added columns such as age_group and sex to make bins for latter analysis. 
+The strengths of this data is that it provides directly which political party that each individual would vote so we can directly use it to predict how the population would vote.  
+
+The 2016 Census @2016Census data is sourced from Statistics Canada and can be accessed by the link in the references.
+Since it is a Census data, it covers most of all the Canadians which gives us the population of all Canadians.
+As you can see in Table 2, I have processed the census data so it would form bins and make prediction easiler in Methodology and Model part. 
+The data covers 27,277,855 Canadians who are older than 20 years old, and I have seperated them by their province, age group and sex then count how many individual falls into each criteria. 
+The strenght of this data  is that since it is census data, it is one of the most ideal scenario we can work with that our data well represent the population that we are interested in. 
+
+And the last data is 2019 Canadian federal election result data. This data will not be used for modeling nor predictions, but instead it will be used to see the difference between the prediction and truth. I have modified the data in a way that only counts Liberal party, Conservative party and New Democratic party as you can see at Table 3.
+
+```{r, echo=FALSE}
+ces2019 %>% 
+  select(yob, gender, province_territory, sex, age_group, which_party_to_vote_for) %>%
+  slice(1:4) %>%
+  kbl(caption = "2019 Canadian Election Study Data") %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r, echo=FALSE}
+census_2016_processed %>% 
+  slice(1:3) %>%
+  kbl(caption = "2016 Canadian Census Data") %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  kable_classic(html_font = "Cambria")
+```
+
+```{r, echo=FALSE}
+realResult %>% 
+  slice(1:3) %>%
+  kbl(caption = "2019 Canadian Federal Election Result") %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  kable_classic(html_font = "Cambria")
+```
+
+\newpage
+
+## Methodology and Model
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+multinomModel <- multinom(which_party_to_vote_for ~ as.factor(age_group) + as.factor(sex) + (1|province_num), data = ces2019, maxit=100)
+ 
+# Predicting the values for train dataset
+census_2016_processed$predicted <- predict(multinomModel, newdata = census_2016_processed)
+
+result <- census_2016_processed %>% 
+  group_by(predicted) %>%
+  summarise(count = sum(count))
+
+result <- result %>%
+  mutate(`ratio(%)`=((count/sum(count)))*100 ) %>%
+  rename(`name of party`=predicted) %>%
+  rename(`number of votes`=count)
+```
+
+The analysis consist two steps.
+
+First, we will work with 2019 Canadian Election Study @DVN/DUS88V_2020 data to build multilevel multinomial logistic regression model. The formual behind the regression is as following. 
+
+$$Pr(Y_{i,k})= Pr(Y_i)=k|x_i;\beta_0,\beta_{age\_group},\beta_{sex}$$
+Where $\beta_0=W_{province}$.
+
+I will explain the formula and model in high level. With the 2019 Canadian Election Study data @DVN/DUS88V_2020, we would like to know for each individual who belongs to certain province, sex and age_group what it the probality of each individual would vote for a certain party. On top of that, I assume that the individuals from the same province tends to act similarly compare to who is from a different province. And that is why we have $\beta_0=W_{province}$ to give the model another level. From the formula $Pr(Y_{i,k})$ represents the probalility of vote for a certain party $i$ given information $k$. 
+
+With this model, we can predict how each factor would affect individual's voting result. 
+And we will use this model to perform poststratification with 2016 Canadian Census @2016Census data and that would be the second step.
+
+For the poststratification, I have already modified the 2016 Canadian Census @2016Census data so it would contain the facotrs that the multilevel multinomial logistic regression model uses.
+For each record of 2016 Canadian Census @2016Census data, we will predict the probalility of voting for all the parties we have. Then, we will choose a party with the maximum probability and assing it to the corresponding records. 
+This way, we can predict which party would win for each bin and how many votes they would have.
+
+## Results
+ 
+The predicted number of votes for each party would get which is based on the multilevel multinomial logistic regression model with poststratification from the previous section can be found with Table 4.
+
+Also you can see with Table 5. that the gap of ratio of votes between Liberal party and Conservative party has been decreased into less than 1% with the predicted result. Also the ratio of votes that NDP would get decreased by about 15% with the predicted result.
+
+The interesting thing with the prediction is that the result is more extreme and the popular parties get more votes and less popular party tends to get less votes.
+
+```{r, echo=FALSE}
+result %>% 
+  kbl(caption = "Predicted result") %>%
+  kable_styling(latex_options = "hold_position") %>%
+  kable_classic(html_font = "Cambria")
+
+predicted_c <- result %>%
+  select(`name of party`, `ratio(%)`) %>%
+  rename(`predicted ratio(%)`=`ratio(%)`)
+
+real_c <- realResult %>%
+  select(`name of party`, `ratio(%)`) %>%
+  rename(`real ratio(%)`=`ratio(%)`)
+
+comparison <- predicted_c %>%
+  left_join(real_c, by = c("name of party")) %>%
+  mutate(`difference(%)`=(`predicted ratio(%)` - `real ratio(%)`))
+
+comparison %>% 
+  kbl(caption = "Prediction versus real result") %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  kable_classic(html_font = "Cambria")
+```
+
+
+## Discussion
+
+First, I want to discuss the limitation of my study. 
+Initially, I wanted to build bins and model with more factors such as individual's family income, education level, ethnicity and seperate them at city level instead of province level. With this approach, I believe the prediction would be more accurate and fine detailed. However, I could not do it since the Census data I could get is already aggreated at province, age group and sex level and I could not find a way to seperate the data with more detailed categories.
+Another limitation is, with my method of choosing which party would get the most of the vote, it only can replicate the system of the winner takes it all that can leads to ignoring minorities or a case of really close win. 
+
+For the next step, I would like to collect Census data that has more fine detail interms of possible bin category and improve my multilevel multinomial logistic regression model so it can handle more factors. On top of that, the way of choosing winner party can be improved as well. Instead of  following the winner takes it all approach, I can calculate the number of votes by taking the probability of each party gets a vote as a weight.
+
+Finally, as you can see from the result of this study, the voting result can be differ as more voters participate and it allows the democratic government to work at its best. So please excersice your right to vote, and encourage others to do so as well for the better future. 
